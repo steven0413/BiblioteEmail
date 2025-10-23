@@ -1,9 +1,19 @@
 import logging
 from app.config import settings
+import time
 
 logger = logging.getLogger(__name__)
 
 class Database:
+    """
+    Gestor de conexiones y operaciones de base de datos.
+    
+    Decisiones técnicas:
+    - PyODBC para mejor compatibilidad con Azure SQL
+    - Modo simulación para desarrollo sin BD
+    - Reintentos automáticos para problemas de conexión transitorios
+    """
+    
     def __init__(self):
         self.connection_string = self._build_connection_string()
     
@@ -19,26 +29,36 @@ class Database:
         )
     
     def get_connection(self):
-        """Obtener conexión - modo simulación mejorado"""
+        """Obtener conexión con manejo robusto de errores"""
         try:
             import pyodbc
-            conn = pyodbc.connect(self.connection_string)
-            return conn
+            # conexión con reintentos
+            for attempt in range(3):
+                try:
+                    conn = pyodbc.connect(self.connection_string)
+                    logger.info("✅ Conexión a BD establecida")
+                    return conn
+                except pyodbc.OperationalError as e:
+                    if "timeout" in str(e).lower() and attempt < 2:
+                        logger.warning(f"⏰ Timeout, reintentando... ({attempt + 1}/3)")
+                        time.sleep(2)
+                        continue
+                    raise
+            
         except ImportError:
-            logger.warning("pyodbc no disponible - modo simulación activado")
+            logger.warning("🔧 PyODBC no disponible - modo simulación activado")
             return MockConnection()
         except Exception as e:
-            logger.error(f"Error de conexión: {e}")
-            logger.info("Modo simulación activado para desarrollo")
+            logger.error(f"❌ Error de conexión: {e}")
+            logger.info("🔧 Modo simulación activado")
             return MockConnection()
     
     def init_database(self):
-        """Inicializar tablas - funciona en modo real o simulación"""
+        """Inicializar tablas si no existen"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            # Scripts de creación de tablas
             tables_sql = [
                 """
                 IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='books' AND xtype='U')
@@ -68,51 +88,34 @@ class Database:
             for sql in tables_sql:
                 cursor.execute(sql)
             conn.commit()
-            logger.info("✅ Tablas de base de datos inicializadas")
+            logger.info("✅ Tablas inicializadas correctamente")
             
         except Exception as e:
-            logger.warning(f"⚠️ Base de datos en modo simulación: {e}")
+            logger.warning(f"⚠️ BD en modo simulación: {e}")
+
 
 class MockConnection:
-    """Conexión simulada mejorada"""
     def cursor(self):
         return MockCursor()
-    
     def commit(self):
         pass
-    
     def close(self):
         pass
 
 class MockCursor:
-    """Cursor simulado con datos de ejemplo y rowcount"""
     def __init__(self):
-        self.rowcount = 1  # Inicializar rowcount para operaciones DML
-
+        self.rowcount = 1
     def execute(self, query, params=None):
-        logger.info(f"🔧 [MODO SIMULACIÓN] Ejecutando: {query[:100]}...")
-        
-        # Simular rowcount basado en el tipo de query
-        query_upper = query.strip().upper()
-        if query_upper.startswith('SELECT'):
-            self.rowcount = 0  # SELECT no afecta rows
-        else:
-            self.rowcount = 1  # INSERT/UPDATE/DELETE afecta 1 row
-        
+        logger.info(f"🔧 [SIMULACIÓN] Ejecutando: {query[:100]}...")
         return self
-    
     def fetchall(self):
-        # Datos de ejemplo para demostración
         return [
-            {"id": 1, "title": "Cien años de soledad", "author": "Gabriel García Márquez", "available": True},
-            {"id": 2, "title": "1984", "author": "George Orwell", "available": True},
-            {"id": 3, "title": "Don Quijote", "author": "Miguel de Cervantes", "available": False}
+            {"id": 1, "title": "Cien años de soledad", "author": "Gabriel García Márquez", "available": True}
         ]
-    
     def fetchone(self):
         return {"id": 1, "title": "Cien años de soledad", "author": "Gabriel García Márquez", "available": True}
-    
     def close(self):
         pass
+
 
 db = Database()
